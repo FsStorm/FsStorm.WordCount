@@ -1,7 +1,8 @@
 FsStorm.WordCount
 =======
 
-A simple example of the usage of the [FsStorm][fsStorm] library. Inspired by the example in [storm-starter][stormStarter]
+A simple example of the usage of the [FsStorm][fsStorm] library.
+Inspired by the example in [storm-starter][stormStarter].
 
 # Building
 Build in Visual Studio.
