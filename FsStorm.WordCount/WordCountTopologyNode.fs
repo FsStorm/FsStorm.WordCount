@@ -4,20 +4,20 @@ open FsJson
 open Storm
 open System
 open System.Collections.Generic
-
-let rnd = new System.Random()
-let sentences = [ "the cow jumped over the moon"
-                  "an apple a day keeps the doctor away"
-                  "four score and seven years ago"
-                  "snow white and the seven dwarfs"
-                  "i am at two with nature" ]
+open System.IO
+open System.Diagnostics
 
 let randomSentence runner cfg =
+    let count = ref 0L
+    let rnd = new System.Random()
     let next emit = 
         fun () ->
             async {
-                System.Threading.Thread.Sleep(100)
-                tuple [sentences.[rnd.Next(0,sentences.Length)]] |> emit
+                // Emit a random sentence from the configured list
+                let sentences = cfg.Json?conf?sentences.Array
+                // Tuple-ize and emit (with some reliability)
+                tuple [sentences.[rnd.Next(0,sentences.Length)]]
+                |> emit (Threading.Interlocked.Increment &count.contents)
             }
     next |> runner
 
@@ -25,22 +25,31 @@ let splitSentence runner emit cfg =
     let execute =
         fun (msg : Json) -> 
             async { 
-                msg?tuple.[0].Val.ToString().Split(' ')
-                |> Array.iter (fun w -> tuple [w] |> emit)
+                // Emit each word from the sentence individually
+                msg?tuple.[0].Val.Split(' ')
+                |> Array.iter (fun w -> tuple [w] |> anchor msg |> emit)
             }
     execute |> runner
 
-let counts = Dictionary<string, int>()
-let wordCount runner emit cfg = 
+let writeCounts (counts:Dictionary<string,int>) dir =
+    let file = sprintf "counts_%i.txt" (Process.GetCurrentProcess().Id)
+    if not (Directory.Exists(dir)) then Directory.CreateDirectory(dir) |> ignore
+    let formatCounts (c:Dictionary<string,int>) = 
+        let concatWordCounts sortBy = String.Join("\n", c |> Seq.sortBy sortBy |> Seq.map (fun kvp -> sprintf "%s - %i" kvp.Key kvp.Value))
+        sprintf "Total words: %i\nTotal count: %i\n===============\n\nSorted by word:\n===============\n%s\n\nSorted by count:\n===============\n%s"
+            (c.Count) (c |> Seq.sumBy (fun kvp -> kvp.Value)) // Total words/count
+            (concatWordCounts (fun kvp -> kvp.Key)) // Sorted alphabetically
+            (concatWordCounts (fun kvp -> (~-) kvp.Value)) // Sorted in descending order of count
+    File.WriteAllText(Path.Combine(dir, file), formatCounts counts)
+
+let wordCount runner emit (counts:Dictionary<string,int>) cfg = 
     let execute = 
         fun (msg : Json) -> 
             async {
+                // Track each word's count in the injected dictionary
                 let word = msg?tuple.[0].Val
-                if counts.ContainsKey(word) = false then counts.Add(word, 1)
-                else counts.[word] <- counts.[word] + 1
-
-                Storm.stormLog(String.Format("Counted '{0}' {1} times", word, counts.[word])) Storm.LogLevel.Info
-
-                tuple [word; counts.[word].ToString()] |> emit
+                if not (counts.ContainsKey(word)) then counts.Add(word, 1) else counts.[word] <- counts.[word] + 1
+                writeCounts counts cfg.Json?conf?dir.Val // Optionally output the results to a file in the configured directory
+                tuple [word; counts.[word]] |> anchor msg |> emit
             }
     execute |> runner
